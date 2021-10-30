@@ -16,7 +16,7 @@ sbatch --account=hahahaha run.sh
 Please refer to [`run.sh`](run.sh) and [`train.py`](train.py) for further details.
 
 ## Some pitfalls
-- Due to some strange issues in the cluster, I have to modify `deepspeed/launcher/multinode_runner.py` and do some additional initializations such as load modules etc. More specifically,
+- Due to some strange issues on the cluster, I have to modify `deepspeed/launcher/multinode_runner.py` and do some additional initializations such as load modules etc. More specifically,
 ```python
 exports = ""
 for key, val in self.exports.items():
