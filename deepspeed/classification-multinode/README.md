@@ -1,6 +1,6 @@
 # Multi-node Training for classification
 This is the folder that documents how to perform multi-node training on a [Slurm cluster](https://slurm.schedmd.com/documentation.html). All the scripts are stilled based on what we've learned in the [`classification`](../classification) example. Required packages are in [`setup.sh`](setup.sh). We will run a classification example using `roberta-large` as an example.
->>>>>>> Stashed changes
+
 > References: <br>
 > [1] https://nlp.stanford.edu/mistral/tutorials/deepspeed.html
 
