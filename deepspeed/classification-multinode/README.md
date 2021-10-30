@@ -10,10 +10,7 @@ node_2_ip slots=4
 ```
 After asking for available nodes, we can write a hostfile based on what we have, see [run.sh](run.sh) for details. One thing to notice is that you may need to use `chmod 777 path/to/bin/deepseed` in case you got permission denied error. Use the following command to run training
 ```bash
-sbatch --account=rrg-bengioy-ad run.sh
-
-UserWarning: Failed to initialize NumPy: numpy.core.multiarray failed to import (Triggered internally at  ../torch/csrc/utils/tensor_numpy.cpp:68.)
-
+sbatch --account=hahahaha run.sh
 ```
 
 Please refer to [`run.sh`](run.sh) and [`train.py`](train.py) for further details.
