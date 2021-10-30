@@ -1,6 +1,6 @@
 # Classification
 
-This is mostly for debug use. We use a `roberta-large` and see its performance to make sure our deepspeed training has not problems. Seems that there are some accuracy decreas when loading a saved checkpoint (maybe due to precision problem?)
+This is mostly for debug use. We use a `roberta-large` and see its performance to make sure our deepspeed training has not problems. Seems that there are some accuracy decrease when loading a saved checkpoint (maybe due to precision problem?)
 
 To run training:
 ```bash
