@@ -9,7 +9,7 @@ This is the "hello world" programs for DeepSpeed, with a MLM pre-training script
 deepspeed --include localhost:1,2 bert.py
 ```
 
-The example of training a model is in `bert_train.py`. Although it's better to have a unified checkpoint dir for all processes for later convenient loading. See examples in `classification` folder.
+The example of training a model is in `bert_train.py`. Although it's better to have a unified checkpoint dir for all processes for later convenient loading. See examples in [`classification`](../classification) folder.
 
 To train, run
 ```bash
