@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --account=rrg-bengioy-ad
+#SBATCH --account=hahahaha
 #SBATCH --cpus-per-task=10
-#SBATCH --nodes=64
+#SBATCH --nodes=2
 #SBATCH --gres=gpu:4
 #SBATCH --mem=248G
 #SBATCH --time=3:00:00
 #SBATCH -o /scratch/aidream/multi-node-cls.out
 
-# salloc --time=1:0:0 --account=rrg-bengioy-ad --gres=gpu:4 --nodes=64  --mem=248G --cpus-per-task=10 --ntasks-per-node=4
+# salloc --time=1:0:0 --account=hahahaha --gres=gpu:4 --nodes=2  --mem=248G --cpus-per-task=10 --ntasks-per-node=4
 # Load module
 module load python/3.8
 module load scipy-stack
@@ -35,7 +35,6 @@ do
 done
 
 # Run DeepSpeed, we should use the latest version of DeepSpeed
- deepspeed --hostfile ./hostfile --num_gpus 4 --num_nodes 1 --master_addr ${head_node_ip} train.py --nnodes 1 --nproc_per_node 4 --checkpoint_dir /scratch/aidream/trained --model_name_or_path /scratch/aidream/roberta-large --train_file /scratch/aidream/SST-2/train.json --validation_file /scratch/aidream/SST-2/dev.json --dataset_chache_dir /scratch/aidream/datasets --batch_size 16
-deepspeed --hostfile ./hostfile --num_gpus 4 --num_nodes 64 --master_addr ${head_node_ip} train.py --nnodes 64 --nproc_per_node 4 --checkpoint_dir /scratch/aidream/trained --model_name_or_path /scratch/aidream/roberta-large --train_file /scratch/aidream/SST-2/train.json --validation_file /scratch/aidream/SST-2/dev.json --dataset_chache_dir /scratch/aidream/datasets --batch_size 16
+deepspeed --hostfile ./hostfile --num_gpus 4 --num_nodes 2 --master_addr ${head_node_ip} --master_port 25091 train.py --checkpoint_dir /scratch/aidream/trained --model_name_or_path /scratch/aidream/roberta-large --train_file /scratch/aidream/SST-2/train.json --validation_file /scratch/aidream/SST-2/dev.json --dataset_chache_dir /scratch/aidream/datasets --batch_size 16
 
-# sbatch --account=rrg-bengioy-ad run.sh
+# sbatch --account=hahahaha run.sh

@@ -63,29 +63,31 @@ def main(
     num_warmup_steps: int = 0,
     log_every: int = 10,
     seed=666,
-    local_rank: int = -1
+    local_rank: int = -1,
 ):
-    """ Train a BERT style model for classification """
-    # local_rank will be automatically decided, don't need us to manually specify
-
     # First init process group
     deepspeed.init_distributed()
+
+    global_rank = torch.distributed.get_rank()
+    logger.info(f"[Global Rank {global_rank}] starts")
+    """ Train a BERT style model for classification """
+    # local_rank will be automatically decided, don't need us to manually specify
 
     device = (
         torch.device("cuda", local_rank)
         if (local_rank > -1) and torch.cuda.is_available()
         else torch.device("cpu")
     )
-    logger.info(f"local_rank: {local_rank}")
+    logger.info(f"Global Rank: {global_rank} Local Rank: {local_rank}")
     assert checkpoint_dir is not None
     checkpoint_dir = pathlib.Path(checkpoint_dir)
 
     ########## Creating Experiment Directory ###########
-    if local_rank != 0:
+    if global_rank != 0:
         torch.distributed.barrier()
 
     # Only allow rank 0 to create directory
-    if local_rank == 0:
+    if global_rank == 0:
         logger.info("Creating Experiment Directory")
         checkpoint_dir.mkdir(exist_ok=True)
         all_arguments = {
@@ -109,7 +111,7 @@ def main(
         assert tb_dir.exists()
         summary_writer = SummaryWriter(log_dir=tb_dir)
 
-    if local_rank == 0:
+    if global_rank == 0:
         # other ranks can proceed
         torch.distributed.barrier()
 
@@ -191,7 +193,7 @@ def main(
     train_sampler = DistributedSampler(
         train_dataset,
         num_replicas=world_size,
-        rank=local_rank,
+        rank=global_rank,
         seed=seed
     )
 
@@ -264,7 +266,7 @@ def main(
 
     eval_metric = metric.compute()
     logger.info(f"total_num: {total_num}, zero-shot accuracy: {eval_metric}")
-    if local_rank == 0:
+    if global_rank == 0:
         summary_writer.add_text("Accuracy", f"Zero-shot accuracy: {eval_metric}")
 
     # Train !
@@ -278,7 +280,7 @@ def main(
     logger.info(f"  Gradient Accumulation steps = {gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {max_train_steps}")
 
-    progress_bar = tqdm(range(max_train_steps), disable=(local_rank != 0))
+    progress_bar = tqdm(range(max_train_steps), disable=(global_rank != 0))
 
     losses = []
 
@@ -301,7 +303,7 @@ def main(
             losses.append(loss.item())
             if step % log_every == 0:
                 logger.info("Loss: {0:.4f}".format(np.mean(losses)))
-                if local_rank == 0:
+                if global_rank == 0:
                     summary_writer.add_scalar(f"Train/loss", np.mean(losses), step)
             if step % checkpoint_every == 0:
                 model.save_checkpoint(save_dir=checkpoint_dir, client_state={"checkpoint_step": step})
@@ -323,7 +325,7 @@ def main(
                 )
         eval_metric = metric.compute()
         logger.info(f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
-        if local_rank == 0:
+        if global_rank == 0:
             summary_writer.add_text("Accuracy", f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
 
 

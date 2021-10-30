@@ -17,3 +17,30 @@ UserWarning: Failed to initialize NumPy: numpy.core.multiarray failed to import 
 ```
 
 Please refer to [`run.sh`](run.sh) and [`train.py`](train.py) for further details.
+
+## Some pitfalls
+- Due to some strange issues in the cluster, I have to modify `deepspeed/launcher/multinode_runner.py` and do some additional initializations such as load modules etc. More specifically,
+```python
+exports = ""
+for key, val in self.exports.items():
+    exports += "export {}={}; ".format(key, val)
+#### BEGIN CHANGES ####
+loads = "module load python/3.8; module load scipy-stack; module load StdEnv/2020 gcc/9.3.0 cuda/11.4; module " \
+        "load arrow/5.0.0; "
+#### END CHANGES ####
+deepspeed_launch = [
+    exports,
+    #### BEGIN CHANGES ####
+    loads,
+    #### END CHANGES ####
+    "cd {};".format(os.path.abspath('.')),
+    sys.executable,
+    "-u",
+    "-m",
+    "deepspeed.launcher.launch",
+    '--world_info={}'.format(self.world_info_base64),
+    "--node_rank=%n",
+    "--master_addr={}".format(self.args.master_addr),
+    "--master_port={}".format(self.args.master_port)
+]
+```
