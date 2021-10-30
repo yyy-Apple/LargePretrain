@@ -10,7 +10,6 @@ import loguru
 import numpy as np
 import torch
 from datasets import load_dataset
-from datasets import load_metric
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
@@ -32,15 +31,15 @@ logger.info(f"world_size: {world_size}")
 
 
 def create_experiment_dir(
-    checkpoint_dir: pathlib.Path, all_arguments
+    checkpoint_dir_path: pathlib.Path, all_arguments
 ):
     """ Create an experiment directory and save all arguments in it."""
-    hparams_file = checkpoint_dir / "hparams.json"
+    hparams_file = checkpoint_dir_path / "hparams.json"
     with hparams_file.open("w") as handle:
         json.dump(obj=all_arguments, fp=handle, indent=2)
 
     # Create the Tensorboard Dir
-    tb_dir = checkpoint_dir / "tb_dir"
+    tb_dir = checkpoint_dir_path / "tb_dir"
     tb_dir.mkdir()
 
 
@@ -53,24 +52,25 @@ def main(
     # Model Params
     model_name_or_path: str = None,
     # Training Params
-    epoch: int = 3,
+    epoch: int = 1,
     batch_size: int = 32,
-    checkpoint_every: int = 1000,
+    checkpoint_every: int = 5000,
     weight_decay: float = 0.0,
     learning_rate: float = 5e-5,
-    gradient_accumulation_steps: int = 2,
+    gradient_accumulation_steps: int = 4,
     lr_scheduler_type: SchedulerType = "linear",
     num_warmup_steps: int = 0,
     log_every: int = 50,
     seed=666,
     local_rank: int = -1,
 ):
+    """ Train a T5 style model for seq2seq generation """
     # First init process group
     deepspeed.init_distributed()
 
     global_rank = torch.distributed.get_rank()
     logger.info(f"[Global Rank {global_rank}] starts")
-    """ Train a BERT style model for classification """
+
     # local_rank will be automatically decided, don't need us to manually specify
 
     device = (
@@ -80,7 +80,7 @@ def main(
     )
     logger.info(f"Global Rank: {global_rank} Local Rank: {local_rank}")
     assert checkpoint_dir is not None
-    checkpoint_dir = pathlib.Path(checkpoint_dir)
+    checkpoint_dir_path = pathlib.Path(checkpoint_dir)
 
     ########## Creating Experiment Directory ###########
     if global_rank != 0:
@@ -89,9 +89,9 @@ def main(
     # Only allow rank 0 to create directory
     if global_rank == 0:
         logger.info("Creating Experiment Directory")
-        checkpoint_dir.mkdir(exist_ok=True)
+        checkpoint_dir_path.mkdir(exist_ok=True)
         all_arguments = {
-            "task": "classification",
+            "task": "seq2seq",
             # Dataset Params
             "train_file": train_file,
             "validation_file": validation_file,
@@ -105,9 +105,9 @@ def main(
             "num_warmup_steps": num_warmup_steps,
             "seed": seed
         }
-        create_experiment_dir(checkpoint_dir, all_arguments)
-        logger.info(f"Experiment Directory created at {checkpoint_dir}")
-        tb_dir = checkpoint_dir / "tb_dir"
+        create_experiment_dir(checkpoint_dir_path, all_arguments)
+        logger.info(f"Experiment Directory created at {checkpoint_dir_path}")
+        tb_dir = checkpoint_dir_path / "tb_dir"
         assert tb_dir.exists()
         summary_writer = SummaryWriter(log_dir=tb_dir)
 
@@ -128,40 +128,55 @@ def main(
     data_files["train"] = train_file
     data_files["validation"] = validation_file
     raw_datasets = load_dataset("json", data_files=data_files, cache_dir=dataset_chache_dir)
-
-    # Get the label list
-    label_list = raw_datasets["train"].unique("label")
-    label_list.sort()  # Let's sort it for determinism
-    num_labels = 2
+    logger.info(f"[Rank {global_rank}] Loaded datasets.")
 
     assert model_name_or_path is not None, "You need to specify model_name_or_path"
-    config = AutoConfig.from_pretrained(model_name_or_path, num_labels=num_labels)
-    model = AutoModelForSequenceClassification.from_pretrained(
+    config = AutoConfig.from_pretrained(model_name_or_path)
+    model = AutoModelForSeq2SeqLM.from_pretrained(
         model_name_or_path,
         from_tf=False,
         config=config
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    max_seq_length = min(tokenizer.model_max_length, 512)
+
+    max_seq_length = min(tokenizer.model_max_length, 1024)
+    # Add special tokens to token embeddings, restructure texts
+    special_tokens_dict = {'additional_special_tokens': ["<text>", "</text>", "<prompt>", "</prompt>",
+                                                         "<answer>", "</answer>"]}
+    tokenizer.add_special_tokens(special_tokens_dict)
+    model.resize_token_embeddings(len(tokenizer))
+
+    if model.config.decoder_start_token_id is None:
+        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+
     logger.info(f"Tokenizer set, max_seq_length: {max_seq_length}")
 
-    # Preprocessing the datasets
-    # Some models have set the order of the labels to use, so let's make sure we do use it.
-    label_to_id = {v: i for i, v in enumerate(label_list)}
-    model.config.label2id = label_to_id
-    model.config.id2label = {id: label for label, id in config.label2id.items()}
+    # Save the tokenizer
+    torch.distributed.barrier()
 
+    if global_rank == 0:
+        tokenizer.save_pretrained(checkpoint_dir)
+        logger.info(f"Tokenizer saved at {checkpoint_dir}")
+
+    torch.distributed.barrier()
+
+    # Preprocessing the datasets
     def preprocess_function(examples):
-        # Tokenize the texts
-        texts = (examples["sentence"],)
-        result = tokenizer(*texts, padding=False, max_length=max_seq_length, truncation=True)
-        result["labels"] = [label_to_id[l] for l in examples["label"]]
-        return result
+        inputs = examples["text"]
+        targets = examples["answer"]
+        model_inputs = tokenizer(inputs, max_length=max_seq_length, padding=False, truncation=True)
+
+        # Setup the tokenizer for targets
+        with tokenizer.as_target_tokenizer():
+            labels = tokenizer(targets, max_length=max_seq_length, padding=False, truncation=True)
+
+        model_inputs["labels"] = labels["input_ids"]
+        return model_inputs
 
     processed_datasets = raw_datasets.map(
         preprocess_function,
         batched=True,
-        remove_columns=raw_datasets["train"].column_names,
+        remove_columns=["text", "answer"],
         desc="Running tokenizer on dataset",
     )
 
@@ -172,7 +187,13 @@ def main(
     for index in random.sample(range(len(train_dataset)), 3):
         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
 
-    data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
+    label_pad_token_id = -100
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer,
+        model=model,
+        label_pad_token_id=label_pad_token_id,
+        pad_to_multiple_of=8,
+    )
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -187,7 +208,6 @@ def main(
             "weight_decay": 0.0,
         },
     ]
-
     optimizer = AdamW(optimizer_grouped_parameters, lr=learning_rate)
 
     train_sampler = DistributedSampler(
@@ -200,10 +220,11 @@ def main(
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        sampler=train_sampler,
+        sampler=train_sampler,  # Sampler option is mutually exclusive with shuffle
         collate_fn=data_collator
     )
 
+    # Actually do not use eval dataset at all.
     eval_dataloader = DataLoader(
         eval_dataset,
         collate_fn=data_collator,
@@ -221,8 +242,6 @@ def main(
         num_training_steps=max_train_steps,
     )
 
-    metric = load_metric("accuracy")
-
     ####### DeepSpeed Engine ########
     logger.info("Creating DeepSpeed Engine")
     ds_config = {
@@ -232,7 +251,7 @@ def main(
         },
         "zero_allow_untested_optimizer": True,
         "zero_optimization": {
-            "stage": 2,
+            "stage": 3,
             "offload_optimizer": {
                 "device": "cpu"
             }
@@ -248,27 +267,6 @@ def main(
     )
     logger.info("DeepSpeed Engine Created")
 
-    # Get the initial zero-shot accuracy
-    model.eval()
-    total_num = 0
-    with torch.no_grad():
-        for step, batch in enumerate(eval_dataloader):
-            for k, v in batch.items():
-                batch[k] = v.to(device)
-            outputs = model(**batch)
-            predictions = outputs.logits.argmax(dim=-1)
-            labels = batch["labels"]
-            total_num += len(labels)
-            metric.add_batch(
-                predictions=predictions,
-                references=labels,
-            )
-
-    eval_metric = metric.compute()
-    logger.info(f"total_num: {total_num}, zero-shot accuracy: {eval_metric}")
-    if global_rank == 0:
-        summary_writer.add_text("Accuracy", f"Zero-shot accuracy: {eval_metric}")
-
     # Train !
     total_batch_size = batch_size * gradient_accumulation_steps * world_size
 
@@ -283,9 +281,8 @@ def main(
     progress_bar = tqdm(range(max_train_steps), disable=(global_rank != 0))
 
     losses = []
-
+    model.train()
     for e in range(epoch):
-        model.train()
         for step, batch in enumerate(train_dataloader):
             # Forward pass
             for k, v in batch.items():
@@ -293,7 +290,7 @@ def main(
             outputs = model(**batch)
             loss = outputs.loss
 
-            # Backward pass, don't need to aggregate from other GPUs
+            # Backward pass, don't need to aggregate from other GPUs, since DeepSpeed will do this for us
             model.backward(loss)
             if step % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 # Optimizer Step
@@ -306,32 +303,15 @@ def main(
                 if global_rank == 0:
                     summary_writer.add_scalar(f"Train/loss", np.mean(losses), step)
             if step % checkpoint_every == 0:
-                model.save_checkpoint(save_dir=checkpoint_dir, client_state={"checkpoint_step": step})
-                logger.info(f"Saved model to {checkpoint_dir}")
+                model.save_checkpoint(save_dir=checkpoint_dir_path, client_state={"checkpoint_step": step})
+                logger.info(f"Saved model to {checkpoint_dir_path}")
 
-        model.eval()
-        total_num = 0
-        with torch.no_grad():
-            for step, batch in enumerate(eval_dataloader):
-                for k, v in batch.items():
-                    batch[k] = v.to(device)
-                outputs = model(**batch)
-                predictions = outputs.logits.argmax(dim=-1)
-                labels = batch["labels"]
-                total_num += len(labels)
-                metric.add_batch(
-                    predictions=predictions,
-                    references=labels,
-                )
-        eval_metric = metric.compute()
-        logger.info(f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
-        if global_rank == 0:
-            summary_writer.add_text("Accuracy", f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
+    model.save_checkpoint(save_dir=checkpoint_dir_path, client_state={"checkpoint_step": step})
+    logger.info(f"Saved model to {checkpoint_dir_path}")
 
 
 if __name__ == "__main__":
     fire.Fire(main)
 """
-deepspeed train.py --checkpoint_dir trained --model_name_or_path roberta-large --train_file SST-2/train.json --validation_file SST-2/dev.json --batch_size 16
-
+deepspeed train.py --checkpoint_dir trained --dataset_chache_dir /scratch/aidream/datasets --model_name_or_path /scratch/aidream/t5-11b --train_file /scratch/aidream/train_enc_dec.json --validation_file /scratch/aidream/val_enc_dec.json --batch_size 1
 """

@@ -83,8 +83,7 @@ def main(
     checkpoint_dir = pathlib.Path(checkpoint_dir)
 
     ########## Creating Experiment Directory ###########
-    if global_rank != 0:
-        torch.distributed.barrier()
+    torch.distributed.barrier()
 
     # Only allow rank 0 to create directory
     if global_rank == 0:
@@ -111,9 +110,7 @@ def main(
         assert tb_dir.exists()
         summary_writer = SummaryWriter(log_dir=tb_dir)
 
-    if global_rank == 0:
-        # other ranks can proceed
-        torch.distributed.barrier()
+    torch.distributed.barrier()
 
     set_seed(seed)
 
@@ -200,7 +197,7 @@ def main(
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        sampler=train_sampler,
+        sampler=train_sampler, # sampler option is mutually exclusive with shuffle
         collate_fn=data_collator
     )
 

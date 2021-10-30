@@ -7,7 +7,6 @@
 #SBATCH --time=3:00:00
 #SBATCH -o /scratch/aidream/multi-node-cls.out
 
-# salloc --time=1:0:0 --account=hahahaha --gres=gpu:4 --nodes=2  --mem=248G --cpus-per-task=10 --ntasks-per-node=4
 # Load module
 module load python/3.8
 module load scipy-stack
