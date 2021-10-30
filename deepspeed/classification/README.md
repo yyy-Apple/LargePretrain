@@ -7,7 +7,7 @@ To run training:
 deepspeed --include localhost:1,2 train.py --checkpoint_dir trained --model_name_or_path roberta-large --train_file SST-2/train.json --validation_file SST-2/dev.json --batch_size 16
 ```
 
-To run evaluation, there are two ways. We can either
+To run evaluation, there are two ways.
 * **Method 1** Transform all the weight checkpoint files (`.pt` files) into a `pytorch_model.bin` using the script provided by DeepSpeed `zero_to_fp32.py`.
 * **Method 2** Use DeepSpeed as well.
 
