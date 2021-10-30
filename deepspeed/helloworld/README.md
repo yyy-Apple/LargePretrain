@@ -1,5 +1,5 @@
 # DeepSpeed
-This is the "hello world" programs for DeepSpeed, with a MLM pre-training and a script that loads the trained model.
+This is the "hello world" programs for DeepSpeed, with a MLM pre-training script.
 ## Some notes
 1. We cannot use `export CUDA_VISIBLE_DEVICES=1,2` or anything like that. Instead, we should use
 > References: <br>
@@ -9,7 +9,7 @@ This is the "hello world" programs for DeepSpeed, with a MLM pre-training and a 
 deepspeed --include localhost:1,2 bert.py
 ```
 
-The example of training a model is in `bert_train.py`. Although it's better to have a unified checkpoint dir for all processes for later convinient loading. See examples in `classification` folder.
+The example of training a model is in `bert_train.py`. Although it's better to have a unified checkpoint dir for all processes for later convenient loading. See examples in `classification` folder.
 
 To train, run
 ```bash
