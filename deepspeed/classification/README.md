@@ -16,8 +16,8 @@ The two methods give the same accuracy.
 ## Method 1
 To transform the weights, we need to run
 ```bash
-cp trained/zero_to_fp32.py ./
 # trained is a checkpoint folder got using DeepSpeed, contains latest, etc.
+cp trained/zero_to_fp32.py ./
 python zero_to_fp32.py trained trained/pytorch_model.bin
 ```
 Then we can use our script to evaluate.
