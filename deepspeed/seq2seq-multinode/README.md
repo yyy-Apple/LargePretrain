@@ -10,3 +10,4 @@ sbatch --account=hahahaha run.sh
 
 ## Some Pitfalls
 * Since `t5-11b` is a super large model. Even if you have 4GPUs, you may only run on 2 of them due to limited CPU memories you have.
+* Or even worse, you need to do [Model Parallelism]() to fit the model into your GPUs. See [`LM-Hub`](../LM-Hub) for detailed examples.
