@@ -65,12 +65,12 @@ def main(
     seed=666,
     local_rank: int = -1,
 ):
+    """ Train a BERT style model for classification """
     # First init process group
     deepspeed.init_distributed()
 
     global_rank = torch.distributed.get_rank()
     logger.info(f"[Global Rank {global_rank}] starts")
-    """ Train a BERT style model for classification """
     # local_rank will be automatically decided, don't need us to manually specify
 
     device = (
