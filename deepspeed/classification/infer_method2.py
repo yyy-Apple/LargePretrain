@@ -4,20 +4,44 @@ import torch
 from datasets import load_dataset, load_metric
 from torch.utils.data import DataLoader
 from transformers import (
-    AutoTokenizer,
-    AutoModelForSequenceClassification,
-    DataCollatorWithPadding
+AutoTokenizer,
+AutoModelForSequenceClassification,
+DataCollatorWithPadding,
+AutoConfig
 )
+from torch.optim import AdamW
+import deepspeed
+import pathlib
 
 logger = loguru.logger
 
 
 def main(
         model_name_or_path: str = None,
+        checkpoint_dir: str = None,
         validation_file: str = None,
-        batch_size: int = 8,
-        device: str = "cuda:0"
+        local_rank: int = -1
 ):
+    device = (
+        torch.device("cuda", local_rank)
+        if (local_rank > -1) and torch.cuda.is_available()
+        else torch.device("cpu")
+    )
+    logger.info(f"local_rank: {local_rank}")
+    load_checkpoint_dir = pathlib.Path(checkpoint_dir)
+    assert load_checkpoint_dir.exists()
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name_or_path,
+        from_tf=False,
+        config=AutoConfig.from_pretrained(model_name_or_path)
+    )
+
+    logger.info("Model created")
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    logger.info("Tokenizer created")
+    max_seq_length = tokenizer.model_max_length
+
     ######### Create Dataset #########
     data_files = {}
     if validation_file is None:
@@ -26,15 +50,6 @@ def main(
 
     data_files["validation"] = validation_file
     raw_datasets = load_dataset("json", data_files=data_files)
-
-    checkpoint = torch.load(model_name_or_path)
-    model = AutoModelForSequenceClassification.from_pretrained("roberta-large")
-    model.load_state_dict(checkpoint)
-    model.to(device)
-    logger.info("Model Loaded")
-    tokenizer = AutoTokenizer.from_pretrained("roberta-large")
-    logger.info("Tokenizer created")
-    max_seq_length = tokenizer.model_max_length
 
     # Get the label list
     label_list = raw_datasets["validation"].unique("label")
@@ -59,9 +74,26 @@ def main(
 
     eval_dataset = processed_datasets["validation"]
     data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=batch_size)
+    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=8)
+    logger.info("Dataset prepared")
 
-    logger.info("DeepSpeed Engine Created")
+    ######### Load Checkpoint #########
+    ds_config = {
+        "train_micro_batch_size_per_gpu": 16,
+        "zero_allow_untested_optimizer": True,
+    }
+    optimizer = AdamW(model.parameters())
+    model, _, _, _ = deepspeed.initialize(
+        model=model,
+        model_parameters=model.parameters(),
+        config=ds_config,
+        optimizer=optimizer
+    )
+    model.load_checkpoint(
+        load_dir=load_checkpoint_dir,
+        load_optimizer_states=False,
+        load_lr_scheduler_states=False
+    )
     logger.info("Model weights loaded")
 
     metric = load_metric("accuracy")
@@ -90,6 +122,6 @@ if __name__ == "__main__":
     fire.Fire(main)
 
 """
-python infer.py --model_name_or_path trained/pytorch_model.bin --validation_file SST-2/dev.json
+deepspeed --include localhost:1 infer_method2.py --checkpoint_dir trained --model_name_or_path roberta-large --validation_file SST-2/dev.json
 total_num: 872, accuracy: {'accuracy': 0.944954128440367}
 """

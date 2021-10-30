@@ -9,14 +9,9 @@ This is the "hello world" programs for DeepSpeed, with a MLM pre-training and a 
 deepspeed --include localhost:1,2 bert.py
 ```
 
-The example of training a model is in `bert_train.py`, and the example of loading a trained model is in `bert_infer.py`
+The example of training a model is in `bert_train.py`. Although it's better to have a unified checkpoint dir for all processes for later convinient loading. See examples in `classification` folder.
 
 To train, run
 ```bash
 deepspeed --include localhost:1,2 bert_train.py --checkpoint_dir bert_pretrain --model_name_or_path bert-base-uncased --train_file train.json --validation_file val.json --batch_size 128
-```
-
-To load model and print out some outputs, run
-```bash
-deepspeed --include localhost:1 bert_infer.py --checkpoint_dir bert_pretrain --model_name_or_path bert-base-uncased
 ```
