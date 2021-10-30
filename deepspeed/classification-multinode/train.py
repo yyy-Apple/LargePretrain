@@ -49,6 +49,7 @@ def main(
     # Dataset Params
     train_file: str = None,
     validation_file: str = None,
+    dataset_chache_dir: str = None,
     # Model Params
     model_name_or_path: str = None,
     # Training Params
@@ -124,7 +125,7 @@ def main(
 
     data_files["train"] = train_file
     data_files["validation"] = validation_file
-    raw_datasets = load_dataset("json", data_files=data_files)
+    raw_datasets = load_dataset("json", data_files=data_files, cache_dir=dataset_chache_dir)
 
     # Get the label list
     label_list = raw_datasets["train"].unique("label")
@@ -139,7 +140,6 @@ def main(
         config=config
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    max_seq_length = tokenizer.model_max_length
     max_seq_length = min(tokenizer.model_max_length, 512)
     logger.info(f"Tokenizer set, max_seq_length: {max_seq_length}")
 
@@ -330,12 +330,6 @@ def main(
 if __name__ == "__main__":
     fire.Fire(main)
 """
-deepspeed --include localhost:0,1,2,3 train.py --checkpoint_dir trained --model_name_or_path roberta-large --train_file SST-2/train.json --validation_file SST-2/dev.json --batch_size 16
-
-zero-shot accuracy: {'accuracy': 0.4908256880733945}
-On epoch 0
-On epoch 1
-On epoch 2 accuracy:  {'accuracy': 0.9506880733944955}
-
+deepspeed train.py --checkpoint_dir trained --model_name_or_path roberta-large --train_file SST-2/train.json --validation_file SST-2/dev.json --batch_size 16
 
 """

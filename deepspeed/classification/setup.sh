@@ -1,8 +1,8 @@
 pip3 install torch
-pip3 install transformers
-pip3 install datasets
-pip3 install deepspeed
-pip3 install fire
-pip3 install tensorboard
-pip3 install loguru
-pip3 install sklearn
+pip3 install transformers --no-index
+pip3 install datasets --no-index
+pip3 install deepspeed --no-index
+pip3 install fire --no-index
+pip3 install tensorboard --no-index
+pip3 install loguru --no-index
+pip3 install sklearn --no-index
