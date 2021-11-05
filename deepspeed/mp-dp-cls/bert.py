@@ -114,7 +114,3 @@ def forward_encoder(
         )
         hidden_states = layer_outputs[0]
     return hidden_states
-
-"""
-vim /home/pliu3/DeepSpeed/venv/lib/python3.8/site-packages/transformers/models/roberta/modeling_roberta.py
-"""
