@@ -37,3 +37,4 @@ done
 deepspeed --hostfile ./hostfile --num_gpus 4 --num_nodes 2 --master_addr ${head_node_ip} --master_port 25091 train.py --checkpoint_dir /scratch/aidream/trained --model_name_or_path /scratch/aidream/roberta-large --train_file /scratch/aidream/SST-2/train.json --validation_file /scratch/aidream/SST-2/dev.json --dataset_chache_dir /scratch/aidream/datasets --batch_size 16
 
 # sbatch --account=hahahaha run.sh
+

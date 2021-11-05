@@ -1,36 +1,35 @@
 import json
-import math
-import os
 import pathlib
 import random
-
+import math
 import deepspeed
-import fire
 import loguru
-import numpy as np
 import torch
-from datasets import load_dataset
-from datasets import load_metric
+from datasets import load_dataset, load_metric
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
+import os
+import numpy as np
+import fire
 from transformers import (
     AdamW,
-    AutoConfig,
-    AutoModelForSequenceClassification,
     AutoTokenizer,
     DataCollatorWithPadding,
     SchedulerType,
     get_scheduler,
     set_seed
 )
+from argparse import Namespace
+
+from bert import ShardedRoBERTa
+import mpu
 
 logger = loguru.logger
-world_size = int(os.getenv('WORLD_SIZE', '1'))
-logger.info(f"world_size: {world_size}")
 
 
+### Helper Functions ###
 def create_experiment_dir(
         checkpoint_dir: pathlib.Path, all_arguments
 ):
@@ -44,12 +43,25 @@ def create_experiment_dir(
     tb_dir.mkdir()
 
 
+def log_rank_0(message):
+    if torch.distributed.get_rank() == 0:
+        logger.info(f"[Global rank 0] {message}")
+
+
+def get_model(args):
+    log_rank_0("Buliding Sharded RoBERTa.")
+    model_wrapper = ShardedRoBERTa(args)
+    model_wrapper.shard()
+    log_rank_0("Sharded RoBERTa Built.")
+    return model_wrapper
+
+
 def main(
         checkpoint_dir: str = None,
         # Dataset Params
         train_file: str = None,
         validation_file: str = None,
-        dataset_chache_dir: str = None,
+        dataset_cache_dir: str = None,
         # Model Params
         model_name_or_path: str = None,
         # Training Params
@@ -65,21 +77,24 @@ def main(
         seed=666,
         local_rank: int = -1,
 ):
-    """ Train a BERT style model for classification """
-    # First init process group
     deepspeed.init_distributed()
-
+    mpu.initialize_model_parallel(4)
     global_rank = torch.distributed.get_rank()
-    logger.info(f"[Global Rank {global_rank}] starts")
-    # local_rank will be automatically decided, don't need us to manually specify
+    model_parallel_rank = mpu.get_model_parallel_rank()
+    model_parallel_size = mpu.get_model_parallel_world_size()
+    data_parallel_size = mpu.get_data_parallel_world_size()
+    log_rank_0(f"model_parallel_size: {model_parallel_size}")
+    log_rank_0(f"data_parallel_size: {data_parallel_size}")
 
     device = (
         torch.device("cuda", local_rank)
         if (local_rank > -1) and torch.cuda.is_available()
         else torch.device("cpu")
     )
-    logger.info(f"Global Rank: {global_rank} Local Rank: {local_rank}")
+
     assert checkpoint_dir is not None
+    if os.path.exists(checkpoint_dir):
+        os.system(f"rm -rf {checkpoint_dir}")
     checkpoint_dir = pathlib.Path(checkpoint_dir)
 
     ########## Creating Experiment Directory ###########
@@ -88,7 +103,7 @@ def main(
     # Only allow rank 0 to create directory
     if global_rank == 0:
         logger.info("Creating Experiment Directory")
-        checkpoint_dir.mkdir(exist_ok=True)
+        checkpoint_dir.mkdir(exist_ok=False)
         all_arguments = {
             "task": "classification",
             # Dataset Params
@@ -110,9 +125,8 @@ def main(
         assert tb_dir.exists()
         summary_writer = SummaryWriter(log_dir=tb_dir)
 
-    torch.distributed.barrier()
-
     set_seed(seed)
+    torch.distributed.barrier()
 
     ######### Create Dataset #########
     data_files = {}
@@ -124,29 +138,17 @@ def main(
 
     data_files["train"] = train_file
     data_files["validation"] = validation_file
-    raw_datasets = load_dataset("json", data_files=data_files, cache_dir=dataset_chache_dir)
+    raw_datasets = load_dataset("json", data_files=data_files, cache_dir=dataset_cache_dir)
 
     # Get the label list
     label_list = raw_datasets["train"].unique("label")
     label_list.sort()  # Let's sort it for determinism
-    num_labels = 2
+    num_labels = len(label_list)
+    label_to_id = {v: i for i, v in enumerate(label_list)}
 
-    assert model_name_or_path is not None, "You need to specify model_name_or_path"
-    config = AutoConfig.from_pretrained(model_name_or_path, num_labels=num_labels)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name_or_path,
-        from_tf=False,
-        config=config
-    )
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     max_seq_length = min(tokenizer.model_max_length, 512)
-    logger.info(f"Tokenizer set, max_seq_length: {max_seq_length}")
-
-    # Preprocessing the datasets
-    # Some models have set the order of the labels to use, so let's make sure we do use it.
-    label_to_id = {v: i for i, v in enumerate(label_list)}
-    model.config.label2id = label_to_id
-    model.config.id2label = {id: label for label, id in config.label2id.items()}
+    log_rank_0(f"Tokenizer set, max_seq_length: {max_seq_length}")
 
     def preprocess_function(examples):
         # Tokenize the texts
@@ -171,16 +173,32 @@ def main(
 
     data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
 
+    torch.distributed.barrier()
+
+    if model_parallel_rank == 0:
+        # Get model arguments
+        model_args = Namespace(
+            num_labels=num_labels,
+            checkpoint=model_name_or_path,
+        )
+        model_wrapper = get_model(model_args)
+
+        model_wrapper.model.config.label2id = label_to_id
+        model_wrapper.model.config.id2label = {id: label for label, id in model_wrapper.model.config.label2id.items()}
+    else:
+        # Seudo Model
+        model_wrapper = torch.nn.Linear(2, 3)
+
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "params": [p for n, p in model_wrapper.named_parameters() if not any(nd in n for nd in no_decay)],
             "weight_decay": weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "params": [p for n, p in model_wrapper.named_parameters() if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
         },
     ]
@@ -189,8 +207,8 @@ def main(
 
     train_sampler = DistributedSampler(
         train_dataset,
-        num_replicas=world_size,
-        rank=global_rank,
+        num_replicas=data_parallel_size,
+        rank=(global_rank // model_parallel_size),  # 0, 1, 2, 3
         seed=seed
     )
 
@@ -221,7 +239,7 @@ def main(
     metric = load_metric("accuracy")
 
     ####### DeepSpeed Engine ########
-    logger.info("Creating DeepSpeed Engine")
+    log_rank_0("Creating DeepSpeed Engine")
     ds_config = {
         "train_micro_batch_size_per_gpu": batch_size,
         "fp16": {
@@ -237,37 +255,39 @@ def main(
     }
 
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
-        model=model,
+        model=model_wrapper,
         optimizer=optimizer,
-        model_parameters=model.parameters(),
+        model_parameters=model_wrapper.parameters(),
         lr_scheduler=lr_scheduler,
+        mpu=mpu,
         config=ds_config
     )
-    logger.info("DeepSpeed Engine Created")
+    torch.distributed.barrier()
+    log_rank_0("DeepSpeed Engine Created")
 
     # Get the initial zero-shot accuracy
     model.eval()
-    total_num = 0
-    with torch.no_grad():
-        for step, batch in enumerate(eval_dataloader):
-            for k, v in batch.items():
-                batch[k] = v.to(device)
-            outputs = model(**batch)
-            predictions = outputs.logits.argmax(dim=-1)
-            labels = batch["labels"]
-            total_num += len(labels)
-            metric.add_batch(
-                predictions=predictions,
-                references=labels,
-            )
-
-    eval_metric = metric.compute()
-    logger.info(f"total_num: {total_num}, zero-shot accuracy: {eval_metric}")
-    if global_rank == 0:
-        summary_writer.add_text("Accuracy", f"Zero-shot accuracy: {eval_metric}")
+    if model_parallel_rank == 0:
+        total_num = 0
+        with torch.no_grad():
+            for step, batch in enumerate(eval_dataloader):
+                for k, v in batch.items():
+                    batch[k] = v.to(device)
+                _, logits = model.forward(**batch)
+                predictions = logits.argmax(dim=-1)
+                labels = batch["labels"]
+                total_num += len(labels)
+                metric.add_batch(
+                    predictions=predictions,
+                    references=labels,
+                )
+        eval_metric = metric.compute()
+        logger.info(f"total_num: {total_num}, zero-shot accuracy: {eval_metric}")
+        if global_rank == 0:
+            summary_writer.add_text("Accuracy", f"Zero-shot accuracy: {eval_metric}")
 
     # Train !
-    total_batch_size = batch_size * gradient_accumulation_steps * world_size
+    total_batch_size = batch_size * gradient_accumulation_steps * data_parallel_size
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
@@ -280,15 +300,22 @@ def main(
     progress_bar = tqdm(range(max_train_steps), disable=(global_rank != 0))
 
     losses = []
-
+    # For later Seudo Loss
+    a = torch.tensor(2., requires_grad=True, device=device)
+    b = torch.tensor(6., requires_grad=True, device=device)
     for e in range(epoch):
         model.train()
         for step, batch in enumerate(train_dataloader):
             # Forward pass
-            for k, v in batch.items():
-                batch[k] = v.to(device)
-            outputs = model(**batch)
-            loss = outputs.loss
+            if model_parallel_rank == 0:
+                for k, v in batch.items():
+                    batch[k] = v.to(device)
+                loss, _ = model(**batch)
+                logger.info(f"mpu.get_model_parallel_group(): {mpu.get_model_parallel_group()}")
+            else:
+                loss = a**2 - b**2
+
+            logger.info(f"[Rank {global_rank}] loss: {loss}")
 
             # Backward pass, don't need to aggregate from other GPUs
             model.backward(loss)
@@ -307,27 +334,36 @@ def main(
                 logger.info(f"Saved model to {checkpoint_dir}")
 
         model.eval()
-        total_num = 0
-        with torch.no_grad():
-            for step, batch in enumerate(eval_dataloader):
-                for k, v in batch.items():
-                    batch[k] = v.to(device)
-                outputs = model(**batch)
-                predictions = outputs.logits.argmax(dim=-1)
-                labels = batch["labels"]
-                total_num += len(labels)
-                metric.add_batch(
-                    predictions=predictions,
-                    references=labels,
-                )
-        eval_metric = metric.compute()
-        logger.info(f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
-        if global_rank == 0:
-            summary_writer.add_text("Accuracy", f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
+        if model_parallel_rank == 0:
+            total_num = 0
+            with torch.no_grad():
+                for step, batch in enumerate(eval_dataloader):
+                    for k, v in batch.items():
+                        batch[k] = v.to(device)
+                    _, logits = model(**batch)
+                    predictions = logits.argmax(dim=-1)
+                    labels = batch["labels"]
+                    total_num += len(labels)
+                    metric.add_batch(
+                        predictions=predictions,
+                        references=labels,
+                    )
+            eval_metric = metric.compute()
+            logger.info(f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
+            if global_rank == 0:
+                summary_writer.add_text("Accuracy", f"total_num: {total_num}, on epoch {e} accuracy: {eval_metric}")
 
 
 if __name__ == "__main__":
     fire.Fire(main)
+
 """
-deepspeed train.py --checkpoint_dir trained --model_name_or_path roberta-large --train_file SST-2/train.json --validation_file SST-2/dev.json --batch_size 27
+vim /home/pliu3/DeepSpeed/venv/lib/python3.8/site-packages/deepspeed/runtime/engine.py
+
+CC:  
+deepspeed train.py --checkpoint_dir /scratch/aidream/trained --model_name_or_path /scratch/aidream/roberta-large --train_file /scratch/aidream/SST-2/train.json --validation_file /scratch/aidream/SST-2/dev.json --batch_size 16
+CLIO:  
+deepspeed train.py --checkpoint_dir trained --model_name_or_path roberta-large --train_file SST-2/train.json --validation_file SST-2/dev.json --batch_size 16
+batch size 108
+'accuracy': 0.948394495412844
 """
