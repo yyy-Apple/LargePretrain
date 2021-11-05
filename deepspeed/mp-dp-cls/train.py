@@ -358,8 +358,6 @@ if __name__ == "__main__":
     fire.Fire(main)
 
 """
-vim /home/pliu3/DeepSpeed/venv/lib/python3.8/site-packages/deepspeed/runtime/engine.py
-
 CC:  
 deepspeed train.py --checkpoint_dir /scratch/aidream/trained --model_name_or_path /scratch/aidream/roberta-large --train_file /scratch/aidream/SST-2/train.json --validation_file /scratch/aidream/SST-2/dev.json --batch_size 16
 CLIO:  
